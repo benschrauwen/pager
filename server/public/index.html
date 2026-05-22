@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pager</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brandText">
+          <h1>Pager</h1>
+          <p>Local events &rarr; agent CLIs</p>
+        </div>
+        <button id="newHandlerButton" type="button" class="primary">+ New</button>
+      </div>
+
+      <section id="setupCard" class="panel">
+        <div class="sectionTitle">
+          <h2>Settings</h2>
+          <span id="settingsStatus" class="pill" data-status="idle"><span class="dot"></span>Required</span>
+        </div>
+        <form id="settingsForm" class="stack">
+          <label>
+            Framework
+            <select id="settingsProvider">
+              <option value="codex">Codex</option>
+              <option value="claude">Claude</option>
+            </select>
+          </label>
+          <label>
+            Model
+            <input id="settingsModel" placeholder="optional">
+          </label>
+          <label>
+            Working directory
+            <input id="settingsCwd" placeholder="/path/to/project">
+          </label>
+          <label class="check">
+            <input id="settingsBypass" type="checkbox" checked>
+            <span>Bypass interactive permission prompts</span>
+          </label>
+          <button type="submit" class="primary block">Save settings</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="sectionTitle">
+          <h2>Handlers</h2>
+          <span id="handlerCount" class="badge">0</span>
+        </div>
+        <div id="handlers" class="list"></div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section id="emptyState" class="empty">
+        <h2>No handler selected</h2>
+        <p>Pick a handler in the sidebar, or create one to start routing incoming events.</p>
+        <button id="emptyStateNew" type="button" class="primary">+ New handler</button>
+      </section>
+
+      <section id="detail" class="detail hidden">
+        <header class="detailHeader">
+          <div class="detailIdent">
+            <div class="detailTitleRow">
+              <h2 id="detailTitle"></h2>
+              <span id="detailStatus" class="pill"></span>
+            </div>
+            <p id="detailMeta"></p>
+          </div>
+          <div class="headerActions">
+            <button id="testHandlerButton" type="button" class="primary">Test event</button>
+            <button id="editHandlerButton" type="button">Edit</button>
+            <button id="duplicateHandlerButton" type="button">Duplicate</button>
+            <button id="refreshButton" type="button" class="ghost">Refresh</button>
+          </div>
+        </header>
+        <div class="detailBody">
+          <aside id="sessions" class="sessionList"></aside>
+          <div id="messages" class="messages"></div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="handlerDialog">
+      <form id="handlerForm" method="dialog" class="dialogBody">
+        <header class="dialogHeader">
+          <h2 id="handlerDialogTitle">New handler</h2>
+          <p class="hint">Configure the event source, pick the prompt, and enable it when ready.</p>
+        </header>
+        <input id="handlerId" type="hidden">
+
+        <div class="formGroup">
+          <div class="formRow">
+            <label>
+              Name
+              <input id="handlerName" placeholder="Telegram triage">
+            </label>
+            <label>
+              Source
+              <select id="handlerSource">
+                <option value="telegram">Telegram</option>
+                <option value="composio_trigger">Composio trigger</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            Session mode
+            <select id="handlerSessionMode">
+              <option value="per_event">New session per event</option>
+              <option value="single_thread">Keep events in one agent session</option>
+            </select>
+            <span class="hint">Single-session mode resumes the same agent session for every event handled by this handler when the selected provider supports it.</span>
+          </label>
+          <label>
+            Prompt template
+            <textarea id="handlerPrompt" rows="7" spellcheck="false"></textarea>
+            <span class="hint">Use <code>{{eventText}}</code>, <code>{{eventJson}}</code>, <code>{{sourceLabel}}</code>, or <code>{{handlerName}}</code>.</span>
+          </label>
+        </div>
+
+        <div id="telegramFields" class="formGroup">
+          <h3>Telegram</h3>
+          <div class="formRow">
+            <label>
+              Bot token
+              <input id="telegramBotToken" placeholder="env fallback supported">
+            </label>
+            <label>
+              Chat ID
+              <input id="telegramChatId" placeholder="env fallback supported">
+            </label>
+          </div>
+        </div>
+
+        <div id="composioFields" class="formGroup hidden">
+          <h3>Composio trigger</h3>
+          <div class="formRow">
+            <label>
+              Composio command
+              <input id="composioCommand" placeholder="composio or /Users/me/.composio/composio">
+            </label>
+            <label>
+              Composio project directory
+              <input id="composioProjectCwd" placeholder="defaults to Settings directory">
+            </label>
+          </div>
+          <div class="formRow">
+            <label>
+              Trigger ID
+              <input id="composioTriggerId" placeholder="ti_...">
+            </label>
+            <label>
+              Trigger slug
+              <input id="composioTriggerSlug" placeholder="GMAIL_NEW_GMAIL_MESSAGE">
+            </label>
+          </div>
+          <div class="formRow">
+            <label>
+              Toolkits
+              <input id="composioToolkits" placeholder="gmail,slack">
+            </label>
+            <label>
+              Connected account ID
+              <input id="composioConnectedAccountId" placeholder="ca_...">
+            </label>
+          </div>
+          <label>
+            User ID
+            <input id="composioUserId" placeholder="optional Composio user id">
+          </label>
+          <p class="hint">Use a trigger ID when possible. Pager runs <code>composio dev listen --json</code> and routes each event to the selected agent CLI.</p>
+        </div>
+
+        <label class="check">
+          <input id="handlerEnabled" type="checkbox">
+          <span>Enabled</span>
+        </label>
+
+        <div class="dialogActions">
+          <button id="deleteHandlerButton" type="button" class="danger">Delete</button>
+          <button id="cancelHandlerButton" type="button" class="ghost">Cancel</button>
+          <button type="submit" class="primary">Save handler</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

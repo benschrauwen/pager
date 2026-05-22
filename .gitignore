@@ -1,0 +1,3 @@
+server/.pager-data/store.json
+server/node_modules/
+.env.local
