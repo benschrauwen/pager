@@ -17,7 +17,7 @@ curl http://127.0.0.1:4111/api/state
 Response fields:
 
 - `settings` — global framework, model, directory, and permission settings.
-- `handlers` — configured event handlers, each augmented with `sourceLabel` and `running`.
+- `handlers` — configured event handlers, each augmented with `sourceLabel` and `running`. Secret source config fields, such as Telegram bot tokens, are redacted.
 - `sessions` — sessions created by handlers, newest first.
 - `providers` — available CLI providers (`codex`, `claude`).
 - `sourceLabels` — available event source IDs and display labels.
@@ -83,7 +83,7 @@ curl -X PUT http://127.0.0.1:4111/api/handlers/HANDLER_ID \
   }'
 ```
 
-PUT replaces the handler's editable fields. Include the current `source`, `prompt`, and `sourceConfig` even when changing only one setting.
+PUT replaces the handler's editable fields. Include the current `source`, `prompt`, and `sourceConfig` even when changing only one setting. For Telegram handlers, an empty `sourceConfig.botToken` keeps the existing saved token so clients can update other fields without reading the secret.
 
 ## Delete a handler
 

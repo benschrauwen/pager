@@ -32,7 +32,7 @@ curl -X POST http://127.0.0.1:4111/api/handlers \
   }'
 ```
 
-After each agent run, Pager sends the assistant response back to the chat. While the agent is working, Pager streams progress with Telegram's `sendMessageDraft` API (Bot API 9.5+) when available — showing a native "Thinking…" placeholder, then partial text as tokens arrive, and "Running tools…" during tool use. In group chats or on older API servers it falls back to a placeholder message updated via `editMessageText`. The final reply is sent with `sendMessage` (truncated to 4096 chars).
+After each agent run, Pager sends the assistant response back to the chat. While the agent is working, Pager streams progress with Telegram's `sendMessageDraft` API (Bot API 9.5+) when available — showing a native "Thinking..." placeholder, then partial text as tokens arrive, and "Running tools..." during tool use. In group chats or on older API servers it falls back to a placeholder message updated via `editMessageText`. The final reply is sent with `sendMessage` (truncated to 4096 chars).
 
 Use `"sessionMode": "per_event"` when each Telegram message should start a fresh agent session. Use `"single_thread"` when the chat should keep one running agent session across messages.
 
@@ -40,11 +40,11 @@ Use `"sessionMode": "per_event"` when each Telegram message should start a fresh
 
 | Field | Notes |
 | ----- | ----- |
-| `botToken` | Bot token from BotFather. Falls back to `PAGER_TELEGRAM_BOT_TOKEN`, `HERMIT_TELEGRAM_BOT_TOKEN`, then `TELEGRAM_BOT_TOKEN`. |
-| `chatId` | Chat to monitor. Falls back to `PAGER_TELEGRAM_CHAT_ID`, `HERMIT_TELEGRAM_CHAT_ID`, then `TELEGRAM_CHAT_ID`. |
+| `botToken` | Bot token from BotFather. Falls back to `PAGER_TELEGRAM_BOT_TOKEN`, then `TELEGRAM_BOT_TOKEN`. |
+| `chatId` | Chat to monitor. Falls back to `PAGER_TELEGRAM_CHAT_ID`, then `TELEGRAM_CHAT_ID`. |
 | `apiBaseUrl` | Override the Telegram API base URL. Defaults to `https://api.telegram.org`. |
 | `pollTimeoutSeconds` | Long-poll timeout. Defaults to `20`. |
 
 Updates are filtered to messages and channel posts sent by humans (not bots) whose `chat.id` matches `chatId`. Empty messages and messages from other chats are ignored.
 
-Pager persists `nextUpdateOffset` on the handler so it does not re-process the same update after a restart.
+Pager persists `nextUpdateOffset` as handler source state so it does not re-process the same update after a restart. This operational state is separate from editable `sourceConfig`.

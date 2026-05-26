@@ -5,6 +5,7 @@ const state = {
   selectedHandlerId: null,
   selectedSessionId: null,
   sourceLabels: {},
+  defaultPrompt: "",
 };
 
 const settingsStatus = document.querySelector("#settingsStatus");
@@ -49,14 +50,6 @@ const composioConnectedAccountId = document.querySelector("#composioConnectedAcc
 const composioUserId = document.querySelector("#composioUserId");
 const deleteHandlerButton = document.querySelector("#deleteHandlerButton");
 
-const defaultPrompt = [
-  "Handle this incoming event from {{sourceLabel}}.",
-  "Keep the response concise and useful.",
-  "",
-  "Event:",
-  "{{eventText}}",
-].join("\n");
-
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -98,34 +91,26 @@ async function api(path, options = {}) {
   return data;
 }
 
-async function loadState({ full = false } = {}) {
-  const data = await api("/api/state");
+async function loadState({ preserveScroll = false } = {}) {
   const prevSessionUpdatedAt = state.sessions.find(
     (session) => session.id === state.selectedSessionId,
   )?.updatedAt;
+  const data = await api("/api/state");
   state.settings = data.settings;
   state.handlers = data.handlers;
   state.sessions = data.sessions;
   state.sourceLabels = data.sourceLabels;
+  state.defaultPrompt = data.defaultPrompt || "";
   if (!state.selectedHandlerId && state.handlers.length > 0) {
     state.selectedHandlerId = state.handlers[0].id;
   }
-  if (full) {
-    render();
-    return;
-  }
-  refreshUI(prevSessionUpdatedAt);
+  await render({ preserveScroll, prevSessionUpdatedAt });
 }
 
-function render() {
+async function render({ preserveScroll = false, prevSessionUpdatedAt = null } = {}) {
   renderSettings();
   renderHandlers();
-  renderDetail();
-}
-
-function refreshUI(prevSessionUpdatedAt) {
-  refreshHandlers();
-  refreshDetail(prevSessionUpdatedAt);
+  await renderDetail({ preserveScroll, prevSessionUpdatedAt });
 }
 
 function renderSettings() {
@@ -145,6 +130,7 @@ function sessionsForHandler(handlerId) {
 function cloneSourceConfig(sourceConfig = {}) {
   const cloned = JSON.parse(JSON.stringify(sourceConfig || {}));
   delete cloned.nextUpdateOffset;
+  delete cloned.hasBotToken;
   return cloned;
 }
 
@@ -194,42 +180,7 @@ function renderHandlers() {
   }
 }
 
-function refreshHandlers() {
-  handlerCount.textContent = String(state.handlers.length);
-  if (state.handlers.length === 0) {
-    if (handlersEl.querySelector(".emptyInline")) return;
-    renderHandlers();
-    return;
-  }
-
-  const buttons = [...handlersEl.querySelectorAll("button.listItem")];
-  const currentIds = buttons.map((button) => button.dataset.handlerId);
-  const expectedIds = state.handlers.map((handler) => handler.id);
-  if (
-    buttons.length !== expectedIds.length
-    || currentIds.some((id, index) => id !== expectedIds[index])
-  ) {
-    renderHandlers();
-    return;
-  }
-
-  for (const handler of state.handlers) {
-    const button = handlersEl.querySelector(`button.listItem[data-handler-id="${handler.id}"]`);
-    const sessions = sessionsForHandler(handler.id);
-    const status = statusOf(handler);
-    const detailLine = status.tone === "error"
-      ? handler.lastError
-      : `${status.label}${handler.lastEventAt ? ` · ${shortDateTime(handler.lastEventAt)}` : ""}`;
-    button.classList.toggle("active", handler.id === state.selectedHandlerId);
-    button.querySelector(".dot").dataset.status = status.tone;
-    button.querySelector(".name").textContent = handler.name;
-    const subs = button.querySelectorAll(".sub");
-    subs[0].textContent = `${handler.sourceLabel} · ${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
-    subs[1].textContent = detailLine;
-  }
-}
-
-function renderDetail() {
+async function renderDetail({ preserveScroll = false, prevSessionUpdatedAt = null } = {}) {
   const handler = state.handlers.find((entry) => entry.id === state.selectedHandlerId);
   if (!handler) {
     detail.classList.add("hidden");
@@ -250,34 +201,10 @@ function renderDetail() {
   detailStatus.innerHTML = `<span class="dot"></span>${status.label}`;
   detailMeta.textContent = `${handler.sourceLabel} · ${handler.sessionModeLabel || "New session per event"} · ${sessions.length} session${sessions.length === 1 ? "" : "s"} · last event ${formatDate(handler.lastEventAt)}`;
   renderSessionCards(sessions);
-  renderMessages();
-}
-
-function refreshDetail(prevSessionUpdatedAt) {
-  const handler = state.handlers.find((entry) => entry.id === state.selectedHandlerId);
-  if (!handler) {
-    detail.classList.add("hidden");
-    emptyState.classList.remove("hidden");
-    return;
-  }
-
-  detail.classList.remove("hidden");
-  emptyState.classList.add("hidden");
-  const sessions = sessionsForHandler(handler.id);
-  if (!state.selectedSessionId || !sessions.some((session) => session.id === state.selectedSessionId)) {
-    state.selectedSessionId = sessions[0]?.id || null;
-  }
-
-  const status = statusOf(handler);
-  detailTitle.textContent = handler.name;
-  detailStatus.dataset.status = status.tone;
-  detailStatus.innerHTML = `<span class="dot"></span>${status.label}`;
-  detailMeta.textContent = `${handler.sourceLabel} · ${handler.sessionModeLabel || "New session per event"} · ${sessions.length} session${sessions.length === 1 ? "" : "s"} · last event ${formatDate(handler.lastEventAt)}`;
-  refreshSessionCards(sessions);
 
   const session = sessions.find((entry) => entry.id === state.selectedSessionId);
-  if (session?.updatedAt && session.updatedAt !== prevSessionUpdatedAt) {
-    renderMessages({ preserveScroll: true });
+  if (!preserveScroll || !prevSessionUpdatedAt || session?.updatedAt !== prevSessionUpdatedAt) {
+    await renderMessages({ preserveScroll });
   }
 }
 
@@ -307,35 +234,6 @@ function renderSessionCards(sessions) {
       renderSessionCards(sessions);
     });
     sessionsEl.append(button);
-  }
-}
-
-function refreshSessionCards(sessions) {
-  if (sessions.length === 0) {
-    if (sessionsEl.querySelector(".emptyInline")) return;
-    renderSessionCards(sessions);
-    return;
-  }
-
-  const cards = [...sessionsEl.querySelectorAll("button.sessionCard")];
-  const currentIds = cards.map((card) => card.dataset.sessionId);
-  const expectedIds = sessions.map((session) => session.id);
-  if (
-    cards.length !== expectedIds.length
-    || currentIds.some((id, index) => id !== expectedIds[index])
-  ) {
-    renderSessionCards(sessions);
-    return;
-  }
-
-  for (const session of sessions) {
-    const button = sessionsEl.querySelector(`button.sessionCard[data-session-id="${session.id}"]`);
-    const [primaryName, ...rest] = session.name.split(" · ");
-    const sessionLabel = rest.length ? rest.join(" · ") : primaryName;
-    button.classList.toggle("active", session.id === state.selectedSessionId);
-    button.querySelector(".name").textContent = sessionLabel;
-    button.querySelector(".when").textContent = shortDateTime(session.updatedAt);
-    button.querySelector(".preview").textContent = session.latestPreview || "No output yet";
   }
 }
 
@@ -396,10 +294,11 @@ function openHandlerDialog(handler = null) {
   handlerName.value = handler?.name || "";
   handlerSource.value = handler?.source || "telegram";
   handlerSessionMode.value = handler?.sessionMode || "per_event";
-  handlerPrompt.value = handler?.prompt || defaultPrompt;
+  handlerPrompt.value = handler?.prompt || state.defaultPrompt;
   handlerEnabled.checked = handler?.enabled === true;
   deleteHandlerButton.classList.toggle("hidden", !handler);
-  telegramBotToken.value = handler?.sourceConfig?.botToken || "";
+  telegramBotToken.value = "";
+  telegramBotToken.placeholder = handler?.sourceConfig?.hasBotToken ? "saved token (leave blank to keep)" : "env fallback supported";
   telegramChatId.value = handler?.sourceConfig?.chatId || "";
   composioCommand.value = handler?.sourceConfig?.command || "";
   composioProjectCwd.value = handler?.sourceConfig?.projectCwd || "";
@@ -443,7 +342,7 @@ function handlerPayload() {
     source,
     enabled: handlerEnabled.checked,
     sessionMode: handlerSessionMode.value,
-    prompt: handlerPrompt.value.trim() || defaultPrompt,
+    prompt: handlerPrompt.value.trim() || state.defaultPrompt,
     sourceConfig,
   };
 }
@@ -494,7 +393,7 @@ duplicateHandlerButton.addEventListener("click", async () => {
     });
     state.selectedHandlerId = data.handler.id;
     state.selectedSessionId = null;
-    await loadState({ full: true });
+    await loadState();
   } catch (error) {
     alert(error.message);
   } finally {
@@ -510,7 +409,7 @@ deleteHandlerButton.addEventListener("click", async () => {
     handlerDialog.close();
     state.selectedHandlerId = null;
     state.selectedSessionId = null;
-    await loadState({ full: true });
+    await loadState();
   } catch (error) {
     alert(error.message);
   }
@@ -528,7 +427,7 @@ handlerForm.addEventListener("submit", async (event) => {
     });
     state.selectedHandlerId = data.handler.id;
     handlerDialog.close();
-    await loadState({ full: true });
+    await loadState();
   } catch (error) {
     alert(error.message);
   }
@@ -546,7 +445,7 @@ testHandlerButton.addEventListener("click", async () => {
       body: JSON.stringify({ text: "Manual test event from the Pager UI." }),
     });
     state.selectedSessionId = data.session.id;
-    await loadState({ full: true });
+    await loadState();
   } catch (error) {
     alert(error.message);
   } finally {
@@ -554,7 +453,7 @@ testHandlerButton.addEventListener("click", async () => {
   }
 });
 
-await loadState({ full: true });
+await loadState();
 setInterval(() => {
-  loadState().catch(() => {});
+  loadState({ preserveScroll: true }).catch(() => {});
 }, 5000);

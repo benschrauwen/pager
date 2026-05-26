@@ -151,7 +151,7 @@ This runs the handler prompt against the supplied text, creates a fresh session,
 ## Inspect handlers and sessions
 
 - UI: pick a handler in the sidebar to see its sessions and full message transcripts.
-- API: `GET /api/state` for handler status and recent sessions; `GET /api/sessions/<id>` for a single transcript.
+- API: `GET /api/state` for handler status and recent sessions; `GET /api/sessions/<id>` for a single transcript. Public handler data redacts secret fields such as Telegram bot tokens.
 
 Full API reference: [reference/api.md](reference/api.md).
 
@@ -192,7 +192,9 @@ composio dev triggers status --toolkits gmail --show-disabled --limit 50
 
 | Path | Purpose |
 | ---- | ------- |
-| `server/server.js` | HTTP server, REST API, handler runtime. |
+| `server/server.js` | HTTP server entrypoint and static file serving. |
+| `server/routes/api.js` | REST API routes. |
+| `server/lib/` | Persistence, runtime supervision, CLI providers, and source runners. |
 | `server/public/` | Browser UI (vanilla JS, no build step). |
 | `server/.pager-data/store.json` | Settings, handlers, session index. |
 | `server/.pager-data/sessions/` | One JSON file per session transcript. |
