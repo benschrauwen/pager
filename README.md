@@ -35,7 +35,7 @@ event source ──▶ handler ──▶ prompt template ──▶ codex / claud
 - **Sources.** Composio dev triggers and Telegram bots, today. Each source has its own listener inside the server. Telegram handlers are two-way: the agent's reply is posted back into the same chat.
 - **Handlers.** Local configuration: which source, which prompt, `per_event` or `single_thread` session mode.
 - **Provider.** You choose `codex` or `claude`, the model, and the working directory each run uses.
-- **Sessions.** Every agent run is persisted to `server/.pager-data/store.json` with its full message transcript.
+- **Sessions.** Handler config and a session index live in `server/.pager-data/store.json`; each run’s full transcript is in `server/.pager-data/sessions/<id>.json`.
 
 ## Quick start
 

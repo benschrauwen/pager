@@ -98,8 +98,11 @@ async function api(path, options = {}) {
   return data;
 }
 
-async function loadState() {
+async function loadState({ full = false } = {}) {
   const data = await api("/api/state");
+  const prevSessionUpdatedAt = state.sessions.find(
+    (session) => session.id === state.selectedSessionId,
+  )?.updatedAt;
   state.settings = data.settings;
   state.handlers = data.handlers;
   state.sessions = data.sessions;
@@ -107,13 +110,22 @@ async function loadState() {
   if (!state.selectedHandlerId && state.handlers.length > 0) {
     state.selectedHandlerId = state.handlers[0].id;
   }
-  render();
+  if (full) {
+    render();
+    return;
+  }
+  refreshUI(prevSessionUpdatedAt);
 }
 
 function render() {
   renderSettings();
   renderHandlers();
   renderDetail();
+}
+
+function refreshUI(prevSessionUpdatedAt) {
+  refreshHandlers();
+  refreshDetail(prevSessionUpdatedAt);
 }
 
 function renderSettings() {
@@ -163,6 +175,7 @@ function renderHandlers() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `listItem${handler.id === state.selectedHandlerId ? " active" : ""}`;
+    button.dataset.handlerId = handler.id;
     button.innerHTML = `
       <span class="dot" data-status="${status.tone}"></span>
       <span class="meta">
@@ -178,6 +191,41 @@ function renderHandlers() {
     });
     button.addEventListener("dblclick", () => openHandlerDialog(handler));
     handlersEl.append(button);
+  }
+}
+
+function refreshHandlers() {
+  handlerCount.textContent = String(state.handlers.length);
+  if (state.handlers.length === 0) {
+    if (handlersEl.querySelector(".emptyInline")) return;
+    renderHandlers();
+    return;
+  }
+
+  const buttons = [...handlersEl.querySelectorAll("button.listItem")];
+  const currentIds = buttons.map((button) => button.dataset.handlerId);
+  const expectedIds = state.handlers.map((handler) => handler.id);
+  if (
+    buttons.length !== expectedIds.length
+    || currentIds.some((id, index) => id !== expectedIds[index])
+  ) {
+    renderHandlers();
+    return;
+  }
+
+  for (const handler of state.handlers) {
+    const button = handlersEl.querySelector(`button.listItem[data-handler-id="${handler.id}"]`);
+    const sessions = sessionsForHandler(handler.id);
+    const status = statusOf(handler);
+    const detailLine = status.tone === "error"
+      ? handler.lastError
+      : `${status.label}${handler.lastEventAt ? ` · ${shortDateTime(handler.lastEventAt)}` : ""}`;
+    button.classList.toggle("active", handler.id === state.selectedHandlerId);
+    button.querySelector(".dot").dataset.status = status.tone;
+    button.querySelector(".name").textContent = handler.name;
+    const subs = button.querySelectorAll(".sub");
+    subs[0].textContent = `${handler.sourceLabel} · ${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
+    subs[1].textContent = detailLine;
   }
 }
 
@@ -205,6 +253,34 @@ function renderDetail() {
   renderMessages();
 }
 
+function refreshDetail(prevSessionUpdatedAt) {
+  const handler = state.handlers.find((entry) => entry.id === state.selectedHandlerId);
+  if (!handler) {
+    detail.classList.add("hidden");
+    emptyState.classList.remove("hidden");
+    return;
+  }
+
+  detail.classList.remove("hidden");
+  emptyState.classList.add("hidden");
+  const sessions = sessionsForHandler(handler.id);
+  if (!state.selectedSessionId || !sessions.some((session) => session.id === state.selectedSessionId)) {
+    state.selectedSessionId = sessions[0]?.id || null;
+  }
+
+  const status = statusOf(handler);
+  detailTitle.textContent = handler.name;
+  detailStatus.dataset.status = status.tone;
+  detailStatus.innerHTML = `<span class="dot"></span>${status.label}`;
+  detailMeta.textContent = `${handler.sourceLabel} · ${handler.sessionModeLabel || "New session per event"} · ${sessions.length} session${sessions.length === 1 ? "" : "s"} · last event ${formatDate(handler.lastEventAt)}`;
+  refreshSessionCards(sessions);
+
+  const session = sessions.find((entry) => entry.id === state.selectedSessionId);
+  if (session?.updatedAt && session.updatedAt !== prevSessionUpdatedAt) {
+    renderMessages({ preserveScroll: true });
+  }
+}
+
 function renderSessionCards(sessions) {
   sessionsEl.innerHTML = "";
   if (sessions.length === 0) {
@@ -217,6 +293,7 @@ function renderSessionCards(sessions) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `sessionCard${session.id === state.selectedSessionId ? " active" : ""}`;
+    button.dataset.sessionId = session.id;
     button.innerHTML = `
       <span class="row">
         <span class="name">${escapeHtml(sessionLabel)}</span>
@@ -233,6 +310,35 @@ function renderSessionCards(sessions) {
   }
 }
 
+function refreshSessionCards(sessions) {
+  if (sessions.length === 0) {
+    if (sessionsEl.querySelector(".emptyInline")) return;
+    renderSessionCards(sessions);
+    return;
+  }
+
+  const cards = [...sessionsEl.querySelectorAll("button.sessionCard")];
+  const currentIds = cards.map((card) => card.dataset.sessionId);
+  const expectedIds = sessions.map((session) => session.id);
+  if (
+    cards.length !== expectedIds.length
+    || currentIds.some((id, index) => id !== expectedIds[index])
+  ) {
+    renderSessionCards(sessions);
+    return;
+  }
+
+  for (const session of sessions) {
+    const button = sessionsEl.querySelector(`button.sessionCard[data-session-id="${session.id}"]`);
+    const [primaryName, ...rest] = session.name.split(" · ");
+    const sessionLabel = rest.length ? rest.join(" · ") : primaryName;
+    button.classList.toggle("active", session.id === state.selectedSessionId);
+    button.querySelector(".name").textContent = sessionLabel;
+    button.querySelector(".when").textContent = shortDateTime(session.updatedAt);
+    button.querySelector(".preview").textContent = session.latestPreview || "No output yet";
+  }
+}
+
 function messageMeta(message) {
   if (!message.meta) return "";
   const parts = [];
@@ -246,10 +352,25 @@ function messageMeta(message) {
   return parts.join(" · ");
 }
 
-async function renderMessages() {
+let messagesRequestId = 0;
+
+async function renderMessages({ preserveScroll = false } = {}) {
+  const requestId = ++messagesRequestId;
+  const sessionId = state.selectedSessionId;
+  if (!sessionId) {
+    messagesEl.innerHTML = "";
+    return;
+  }
+
+  const wasNearBottom = preserveScroll
+    ? messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 48
+    : false;
+  const scrollTop = messagesEl.scrollTop;
+
+  const data = await api(`/api/sessions/${sessionId}`);
+  if (requestId !== messagesRequestId || sessionId !== state.selectedSessionId) return;
+
   messagesEl.innerHTML = "";
-  if (!state.selectedSessionId) return;
-  const data = await api(`/api/sessions/${state.selectedSessionId}`);
   for (const message of data.messages) {
     const article = document.createElement("article");
     article.className = `message ${message.role}`;
@@ -262,6 +383,10 @@ async function renderMessages() {
       article.append(footer);
     }
     messagesEl.append(article);
+  }
+
+  if (preserveScroll) {
+    messagesEl.scrollTop = wasNearBottom ? messagesEl.scrollHeight : scrollTop;
   }
 }
 
@@ -369,7 +494,7 @@ duplicateHandlerButton.addEventListener("click", async () => {
     });
     state.selectedHandlerId = data.handler.id;
     state.selectedSessionId = null;
-    await loadState();
+    await loadState({ full: true });
   } catch (error) {
     alert(error.message);
   } finally {
@@ -385,7 +510,7 @@ deleteHandlerButton.addEventListener("click", async () => {
     handlerDialog.close();
     state.selectedHandlerId = null;
     state.selectedSessionId = null;
-    await loadState();
+    await loadState({ full: true });
   } catch (error) {
     alert(error.message);
   }
@@ -403,13 +528,13 @@ handlerForm.addEventListener("submit", async (event) => {
     });
     state.selectedHandlerId = data.handler.id;
     handlerDialog.close();
-    await loadState();
+    await loadState({ full: true });
   } catch (error) {
     alert(error.message);
   }
 });
 
-refreshButton.addEventListener("click", loadState);
+refreshButton.addEventListener("click", () => loadState());
 
 testHandlerButton.addEventListener("click", async () => {
   const handler = state.handlers.find((entry) => entry.id === state.selectedHandlerId);
@@ -421,7 +546,7 @@ testHandlerButton.addEventListener("click", async () => {
       body: JSON.stringify({ text: "Manual test event from the Pager UI." }),
     });
     state.selectedSessionId = data.session.id;
-    await loadState();
+    await loadState({ full: true });
   } catch (error) {
     alert(error.message);
   } finally {
@@ -429,7 +554,7 @@ testHandlerButton.addEventListener("click", async () => {
   }
 });
 
-await loadState();
+await loadState({ full: true });
 setInterval(() => {
-    loadState().catch(() => {});
+  loadState().catch(() => {});
 }, 5000);

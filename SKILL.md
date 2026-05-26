@@ -62,7 +62,7 @@ npm start
 
 Open `http://127.0.0.1:4111` in a browser, or drive the server through its REST API (see [reference/api.md](reference/api.md)).
 
-State is persisted to `server/.pager-data/store.json`.
+State is persisted under `server/.pager-data/`: `store.json` for settings, handlers, and a session index; `sessions/<id>.json` for each run’s transcript.
 
 ## Configure once
 
@@ -194,7 +194,8 @@ composio dev triggers status --toolkits gmail --show-disabled --limit 50
 | ---- | ------- |
 | `server/server.js` | HTTP server, REST API, handler runtime. |
 | `server/public/` | Browser UI (vanilla JS, no build step). |
-| `server/.pager-data/store.json` | Persisted settings, handlers, sessions. |
+| `server/.pager-data/store.json` | Settings, handlers, session index. |
+| `server/.pager-data/sessions/` | One JSON file per session transcript. |
 | `reference/composio-trigger-setup.md` | Full Composio trigger creation walkthrough. |
 | `reference/telegram-setup.md` | Telegram bot handler fields and env fallback. |
 | `reference/api.md` | Full REST API reference. |

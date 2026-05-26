@@ -9,7 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const dataDir = path.join(__dirname, ".pager-data");
 const storePath = path.join(dataDir, "store.json");
-const legacySessionsPath = path.join(dataDir, "sessions.json");
+const sessionsDir = path.join(dataDir, "sessions");
 const port = Number(process.env.PORT || 4111);
 const host = process.env.HOST || "127.0.0.1";
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
@@ -112,41 +112,108 @@ function normalizeHandler(input = {}) {
   };
 }
 
+function normalizeSessionIndex(entry = {}) {
+  return {
+    id: typeof entry.id === "string" ? entry.id : randomUUID(),
+    handlerId: typeof entry.handlerId === "string" ? entry.handlerId : null,
+    source: entry.source || "event",
+    name: typeof entry.name === "string" ? entry.name : "Session",
+    provider: providers[entry.provider] ? entry.provider : defaultSettings.provider,
+    cwd: typeof entry.cwd === "string" ? entry.cwd : defaultSettings.cwd,
+    model: typeof entry.model === "string" ? entry.model : "",
+    sessionMode: sessionModes[entry.sessionMode] ? entry.sessionMode : "per_event",
+    createdAt: typeof entry.createdAt === "string" ? entry.createdAt : nowIso(),
+    updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : nowIso(),
+    messageCount: Number.isInteger(entry.messageCount) ? entry.messageCount : 0,
+    latestPreview: typeof entry.latestPreview === "string" ? entry.latestPreview : "",
+  };
+}
+
 function normalizeStore(parsed = {}) {
-  const legacySessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
   return {
     settings: {
       ...defaultSettings,
       ...(parsed.settings && typeof parsed.settings === "object" ? parsed.settings : {}),
     },
     handlers: Array.isArray(parsed.handlers) ? parsed.handlers.map(normalizeHandler) : [],
-    sessions: legacySessions.map((session) => ({
-      ...session,
-      source: session.source || session.purpose || "manual",
-      handlerId: session.handlerId || null,
-    })),
+    sessions: Array.isArray(parsed.sessions) ? parsed.sessions.map(normalizeSessionIndex) : [],
   };
 }
 
+function sessionFilePath(sessionId) {
+  return path.join(sessionsDir, `${sessionId}.json`);
+}
+
+let writeChain = Promise.resolve();
+
+function enqueueWrite(task) {
+  const run = writeChain.then(task, task);
+  writeChain = run.catch(() => {});
+  return run;
+}
+
+async function writeJsonAtomic(filePath, value) {
+  const dir = path.dirname(filePath);
+  await fs.mkdir(dir, { recursive: true });
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.tmp`);
+  await fs.writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`);
+  await fs.rename(tmpPath, filePath);
+}
+
 async function loadStore() {
-  await fs.mkdir(dataDir, { recursive: true });
+  await fs.mkdir(sessionsDir, { recursive: true });
   try {
     return normalizeStore(JSON.parse(await fs.readFile(storePath, "utf8")));
   } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-
-  try {
-    return normalizeStore(JSON.parse(await fs.readFile(legacySessionsPath, "utf8")));
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-    return normalizeStore({});
+    if (error?.code === "ENOENT") return normalizeStore({});
+    throw error;
   }
 }
 
 async function saveStore(store) {
-  await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(storePath, `${JSON.stringify(normalizeStore(store), null, 2)}\n`);
+  await enqueueWrite(() => writeJsonAtomic(storePath, normalizeStore(store)));
+}
+
+function normalizeSessionRecord(session = {}) {
+  const index = normalizeSessionIndex(session);
+  return {
+    ...index,
+    bypassPermissions: session.bypassPermissions !== false,
+    cliSessionId: typeof session.cliSessionId === "string" ? session.cliSessionId : null,
+    event: session.event && typeof session.event === "object" ? session.event : null,
+    messages: Array.isArray(session.messages) ? session.messages : [],
+  };
+}
+
+async function loadSession(sessionId) {
+  try {
+    const parsed = JSON.parse(await fs.readFile(sessionFilePath(sessionId), "utf8"));
+    return normalizeSessionRecord(parsed);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function sessionIndexEntry(session) {
+  return publicSession(session);
+}
+
+function upsertSessionIndex(store, session) {
+  const entry = sessionIndexEntry(session);
+  const index = store.sessions.findIndex((item) => item.id === entry.id);
+  if (index === -1) store.sessions.push(entry);
+  else store.sessions[index] = entry;
+}
+
+async function saveSession(session) {
+  const record = normalizeSessionRecord(session);
+  await enqueueWrite(async () => {
+    await writeJsonAtomic(sessionFilePath(record.id), record);
+    const store = await loadStore();
+    upsertSessionIndex(store, record);
+    await writeJsonAtomic(storePath, normalizeStore(store));
+  });
 }
 
 function publicSession(session) {
@@ -161,8 +228,10 @@ function publicSession(session) {
     model: session.model || "",
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
-    messageCount: Array.isArray(session.messages) ? session.messages.length : 0,
-    latestPreview: latest?.content?.slice(0, 140) || "",
+    messageCount: Array.isArray(session.messages)
+      ? session.messages.length
+      : (Number.isInteger(session.messageCount) ? session.messageCount : 0),
+    latestPreview: latest?.content?.slice(0, 140) || session.latestPreview || "",
   };
 }
 
@@ -331,9 +400,10 @@ async function createEventSession(handler, event) {
   const singleThread = handler.sessionMode === "single_thread";
   let session = null;
   if (singleThread) {
-    session = store.sessions
+    const indexEntry = store.sessions
       .filter((entry) => entry.handlerId === handler.id && entry.sessionMode === "single_thread")
       .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0] || null;
+    if (indexEntry) session = await loadSession(indexEntry.id);
   }
   if (!session) {
     session = {
@@ -352,7 +422,6 @@ async function createEventSession(handler, event) {
       event,
       messages: [],
     };
-    store.sessions.push(session);
   } else {
     if (session.provider !== settings.provider) {
       // Provider changed since the last run; the stored cliSessionId belongs
@@ -402,13 +471,8 @@ async function createEventSession(handler, event) {
   });
   session.updatedAt = finishedAt;
 
+  await saveSession(session);
   const latestStore = await loadStore();
-  const sessionIndex = latestStore.sessions.findIndex((entry) => entry.id === session.id);
-  if (sessionIndex === -1) {
-    latestStore.sessions.push(session);
-  } else {
-    latestStore.sessions[sessionIndex] = session;
-  }
   const latestHandler = latestStore.handlers.find((entry) => entry.id === handler.id);
   if (latestHandler) {
     latestHandler.lastEventAt = finishedAt;
@@ -880,8 +944,7 @@ async function handleApi(req, res, pathname) {
 
   const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
   if (sessionMatch && req.method === "GET") {
-    const store = await loadStore();
-    const session = store.sessions.find((entry) => entry.id === sessionMatch[1]);
+    const session = await loadSession(sessionMatch[1]);
     if (!session) return notFound(res);
     json(res, 200, { session: publicSession(session), messages: session.messages || [] });
     return;
