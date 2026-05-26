@@ -2,6 +2,20 @@
 
 This walks through creating a Composio trigger that Pager can listen to, end-to-end. It assumes the Composio CLI is installed and you are logged in (see [SKILL.md](../SKILL.md) prerequisites).
 
+Authentication is owned by the Composio CLI session. Before configuring a
+trigger, confirm it with:
+
+```sh
+composio login
+composio whoami
+```
+
+For non-interactive use, authenticate with:
+
+```sh
+composio login --user-api-key "$COMPOSIO_USER_API_KEY" --org "$COMPOSIO_ORG"
+```
+
 ## Concepts
 
 Composio trigger setup has three independent layers. Keep them distinct.
@@ -110,6 +124,10 @@ composio dev listen --trigger-id ti_... --json --max-events 1
 ```
 
 For Gmail, send a new message to the linked account. Delivery is poll-based, so it can take up to the configured `interval` minutes.
+
+If the listener immediately reports `Invalid or revoked user API key` or
+`HTTP_Unauthorized`, authenticate the CLI again with `composio login`, verify
+with `composio whoami`, and rerun this smoke test before starting Pager.
 
 ## 6. Register the Pager handler
 

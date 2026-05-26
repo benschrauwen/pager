@@ -39,7 +39,11 @@ event source ──▶ handler ──▶ prompt template ──▶ codex / claud
 
 ## Quick start
 
-Requirements: Node.js 18+, and at least one agent CLI installed and authenticated (`@openai/codex` or `@anthropic-ai/claude-code`). For Composio triggers you also need a [Composio](https://app.composio.dev/) account and the `composio` CLI.
+Requirements: Node.js 18+, and at least one agent CLI installed and authenticated (`@openai/codex` or `@anthropic-ai/claude-code`). For Composio triggers you also need a [Composio](https://app.composio.dev/) account and the `composio` CLI authenticated through `composio login`.
+
+Pager runs the authenticated `composio` CLI for trigger listeners. Authenticate
+or refresh that CLI session with `composio login` and verify it with
+`composio whoami`.
 
 Start the server:
 

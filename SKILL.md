@@ -40,10 +40,15 @@ The runnable code lives in [server/](server/). Humans use the browser UI; agents
    composio whoami
    ```
 
-   For non-interactive setup with provided credentials:
+   `composio login` is the authentication source used by `composio dev listen`.
+   Do not configure Pager authentication by adding a Composio API key to a
+   project `.env.local` file.
+
+   For non-interactive CLI login with provided credentials:
 
    ```sh
    composio login --user-api-key "$COMPOSIO_USER_API_KEY" --org "$COMPOSIO_ORG"
+   composio whoami
    ```
 
    If `composio` is not on `PATH`, set `PAGER_COMPOSIO_COMMAND="$HOME/.composio/composio"` before starting the server.
@@ -178,6 +183,7 @@ composio dev triggers status --toolkits gmail --show-disabled --limit 50
 ## Troubleshooting
 
 - `composio: command not found` — add `$HOME/.composio` to `PATH`, or set `PAGER_COMPOSIO_COMMAND`.
+- `Invalid or revoked user API key` / `HTTP_Unauthorized` — run `composio login` again (or `composio login --user-api-key ... --org ...`), verify with `composio whoami`, then restart Pager or the affected handler. Do not try to fix this by putting an API key in `.env.local`.
 - `No developer project configured` — run `composio dev init -y` inside the handler's `projectCwd`.
 - No trigger events — confirm the trigger is `ACTIVE` (`composio dev triggers status`) and try the listener manually with `composio dev listen --trigger-id ti_... --json --max-events 1`. Gmail triggers poll on a configured interval (minutes); delivery is not instant.
 - Handler stays in `lastError` — read `handler.lastError` in `GET /api/state` and inspect the Pager server logs.
