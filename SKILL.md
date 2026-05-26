@@ -114,7 +114,7 @@ Pager starts `composio dev listen --json --trigger-id ti_...` in the background,
 `sessionMode` may be:
 
 - `per_event` — create a new Pager session and agent session for every event.
-- `single_thread` — keep all events for this handler in one Pager session and resume the same agent session for each event when the selected provider supports session resume.
+- `single_thread` — keep all events for this handler in one Pager session and resume the same agent session for each event. Supported by both `codex` and `claude` providers.
 
 ## Add a Telegram handler (optional)
 

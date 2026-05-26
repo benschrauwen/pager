@@ -202,8 +202,9 @@ function buildCodexArgs(session, options = {}) {
   return args;
 }
 
-function buildClaudeArgs(session) {
+function buildClaudeArgs(session, options = {}) {
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+  if (options.resumeCliSessionId) args.push("--resume", options.resumeCliSessionId);
   if (session.bypassPermissions) args.push("--dangerously-skip-permissions");
   if (session.model) args.push("--model", session.model);
   return args;
@@ -279,7 +280,7 @@ function parseClaude(stdout) {
 
 function runCli(session, prompt, options = {}) {
   const provider = providers[session.provider];
-  const args = session.provider === "claude" ? buildClaudeArgs(session) : buildCodexArgs(session, options);
+  const args = session.provider === "claude" ? buildClaudeArgs(session, options) : buildCodexArgs(session, options);
 
   return new Promise((resolve) => {
     const child = spawn(provider.command, args, {
@@ -325,10 +326,6 @@ function renderPrompt(template, event, handler) {
 async function createEventSession(handler, event) {
   const store = await loadStore();
   const settings = store.settings;
-  if (handler.sessionMode === "single_thread" && settings.provider !== "codex") {
-    throw new Error("Single-session mode is not supported by the selected provider.");
-  }
-
   const cwd = await validateCwd(settings.cwd);
   const startedAt = nowIso();
   const singleThread = handler.sessionMode === "single_thread";
@@ -357,6 +354,11 @@ async function createEventSession(handler, event) {
     };
     store.sessions.push(session);
   } else {
+    if (session.provider !== settings.provider) {
+      // Provider changed since the last run; the stored cliSessionId belongs
+      // to a different CLI and cannot be resumed against the new one.
+      session.cliSessionId = null;
+    }
     session.provider = settings.provider;
     session.cwd = cwd;
     session.model = settings.model || "";
@@ -933,3 +935,21 @@ server.listen(port, host, async () => {
   syncHandlerRuntimes(store);
   console.log(`Pager is running at http://${host}:${port}`);
 });
+
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Received ${signal}, stopping handlers...`);
+  for (const id of [...telegramRunners.keys(), ...composioRunners.keys()]) {
+    stopHandlerRuntime(id);
+  }
+  // Give in-flight subprocesses a moment to exit, then hard-exit if the
+  // HTTP server is still keeping the event loop alive.
+  const forceExit = setTimeout(() => process.exit(0), 3000);
+  forceExit.unref();
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));

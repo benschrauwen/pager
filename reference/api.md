@@ -66,7 +66,7 @@ curl -X POST http://127.0.0.1:4111/api/handlers \
 | Value | Behavior |
 | ----- | -------- |
 | `per_event` | Default. Every event creates a new Pager session and a fresh agent session. |
-| `single_thread` | All events for this handler append to one Pager session and resume the same agent session when the selected provider supports session resume. |
+| `single_thread` | All events for this handler append to one Pager session and resume the same agent session. Works with both `codex` and `claude`. |
 
 ## Update or disable a handler
 
