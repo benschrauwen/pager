@@ -1,5 +1,9 @@
 # Pager
 
+<p align="center">
+  <img src="assets/pager-hero.png" alt="Pixel-art Claude mascot proudly holding up a 90s pager that reads INCOMING!" width="640">
+</p>
+
 Page your local agent when something happens elsewhere.
 
 Pager is a skill that includes a small Node.js server that listens for external events — Composio triggers (Gmail, Slack, GitHub, Linear, …) and Telegram messages — renders each event through a prompt template, and runs your local `codex` or `claude` CLI against it. Every run is stored as an inspectable session you can browse from a built-in web UI or query through a REST API.
