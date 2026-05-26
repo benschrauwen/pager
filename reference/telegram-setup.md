@@ -32,7 +32,7 @@ curl -X POST http://127.0.0.1:4111/api/handlers \
   }'
 ```
 
-After each agent run, Pager sends the assistant response back to the chat with `sendMessage` (truncated to 4096 chars).
+After each agent run, Pager sends the assistant response back to the chat. While the agent is working, Pager streams progress with Telegram's `sendMessageDraft` API (Bot API 9.5+) when available — showing a native "Thinking…" placeholder, then partial text as tokens arrive, and "Running tools…" during tool use. In group chats or on older API servers it falls back to a placeholder message updated via `editMessageText`. The final reply is sent with `sendMessage` (truncated to 4096 chars).
 
 Use `"sessionMode": "per_event"` when each Telegram message should start a fresh agent session. Use `"single_thread"` when the chat should keep one running agent session across messages.
 

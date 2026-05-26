@@ -1,3 +1,4 @@
 server/.pager-data/
 server/node_modules/
 .env.local
+.cursor/settings.json

@@ -13,6 +13,8 @@ const sessionsDir = path.join(dataDir, "sessions");
 const port = Number(process.env.PORT || 4111);
 const host = process.env.HOST || "127.0.0.1";
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
+const TELEGRAM_STREAM_THROTTLE_MS = 800;
+const TELEGRAM_DRAFT_KEEPALIVE_MS = 25_000;
 
 const providers = {
   codex: { label: "Codex", command: process.env.CODEX_COMMAND || "codex" },
@@ -196,7 +198,7 @@ async function loadSession(sessionId) {
 }
 
 function sessionIndexEntry(session) {
-  return publicSession(session);
+  return normalizeSessionIndex(publicSession(session));
 }
 
 function upsertSessionIndex(store, session) {
@@ -226,6 +228,7 @@ function publicSession(session) {
     provider: session.provider,
     cwd: session.cwd,
     model: session.model || "",
+    sessionMode: sessionModes[session.sessionMode] ? session.sessionMode : "per_event",
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     messageCount: Array.isArray(session.messages)
@@ -347,9 +350,147 @@ function parseClaude(stdout) {
   return { cliSessionId, model, assistant: (result || assistantParts.join("\n\n")).trim(), usage, costUsd };
 }
 
+function createCliStreamState(provider) {
+  return { provider, lineBuffer: "", assistantText: "", phase: "thinking", toolLabel: null };
+}
+
+function codexItemType(item) {
+  return item?.type || item?.item_type || "";
+}
+
+function summarizeCodexCommand(command) {
+  const value = String(command || "").trim();
+  if (!value) return null;
+  const match = value.match(/^(?:bash\s+-lc\s+)?(\S+)/);
+  return match?.[1] || value.slice(0, 32);
+}
+
+function updateCodexStreamState(state, event) {
+  const item = event.item;
+  const itemType = codexItemType(item);
+  const activeItemTypes = new Set(["command_execution", "mcp_tool_call", "web_search", "file_change"]);
+
+  if (event.type === "turn.started") {
+    state.phase = "thinking";
+    state.toolLabel = null;
+    return;
+  }
+
+  if (itemType === "reasoning") {
+    state.phase = "thinking";
+    return;
+  }
+
+  const toolInProgress =
+    (event.type === "item.started" || event.type === "item.updated") &&
+    activeItemTypes.has(itemType) &&
+    item.status !== "completed" &&
+    item.status !== "failed";
+
+  if (toolInProgress) {
+    state.phase = "tools";
+    if (itemType === "command_execution") state.toolLabel = summarizeCodexCommand(item.command) || "command";
+    else if (itemType === "mcp_tool_call") state.toolLabel = item.tool || item.name || "tool";
+    else if (itemType === "web_search") state.toolLabel = "web search";
+    else state.toolLabel = itemType.replaceAll("_", " ");
+    return;
+  }
+
+  if (itemType === "agent_message" || itemType === "assistant_message") {
+    if (item.text) {
+      state.assistantText = item.text;
+      state.phase = "text";
+      state.toolLabel = null;
+    }
+  }
+}
+
+function updateClaudeStreamState(state, event) {
+  if (event.type === "tool_use") {
+    state.phase = "tools";
+    state.toolLabel = event.name || "tool";
+    return;
+  }
+
+  if (event.type === "stream_event") {
+    const inner = event.event;
+    if (inner?.type === "content_block_start") {
+      const blockType = inner.content_block?.type;
+      if (blockType === "tool_use") {
+        state.phase = "tools";
+        state.toolLabel = inner.content_block?.name || "tool";
+        return;
+      }
+      if (blockType === "text") {
+        state.phase = "thinking";
+      }
+    }
+    if (inner?.type === "content_block_delta" && inner.delta?.type === "text_delta" && inner.delta.text) {
+      state.assistantText += inner.delta.text;
+      state.phase = "text";
+      state.toolLabel = null;
+    }
+    return;
+  }
+
+  if (event.type === "assistant") {
+    const parts = [];
+    let hasTool = false;
+    let toolName = null;
+    for (const block of event.message?.content || []) {
+      if (block?.type === "text" && block.text) parts.push(block.text);
+      if (block?.type === "tool_use") {
+        hasTool = true;
+        toolName = block.name || toolName;
+      }
+    }
+    if (hasTool) {
+      state.phase = "tools";
+      state.toolLabel = toolName || "tool";
+      return;
+    }
+    if (parts.length) {
+      state.assistantText = parts.join("\n\n");
+      state.phase = "text";
+      state.toolLabel = null;
+    }
+  }
+
+  if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
+    state.assistantText += event.delta.text;
+    state.phase = "text";
+    state.toolLabel = null;
+  }
+}
+
+function consumeCliStreamChunk(state, chunk, onStream) {
+  state.lineBuffer += chunk;
+  const lines = state.lineBuffer.split(/\r?\n/);
+  state.lineBuffer = lines.pop() || "";
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (state.provider === "claude") updateClaudeStreamState(state, event);
+    else updateCodexStreamState(state, event);
+    onStream?.({
+      text: state.assistantText,
+      phase: state.phase,
+      toolLabel: state.toolLabel,
+    });
+  }
+}
+
 function runCli(session, prompt, options = {}) {
   const provider = providers[session.provider];
   const args = session.provider === "claude" ? buildClaudeArgs(session, options) : buildCodexArgs(session, options);
+  const onStream = typeof options.onStream === "function" ? options.onStream : null;
+  const streamState = onStream ? createCliStreamState(session.provider) : null;
 
   return new Promise((resolve) => {
     const child = spawn(provider.command, args, {
@@ -362,7 +503,9 @@ function runCli(session, prompt, options = {}) {
     let settled = false;
 
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      stdout += text;
+      if (streamState) consumeCliStreamChunk(streamState, text, onStream);
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
@@ -392,7 +535,7 @@ function renderPrompt(template, event, handler) {
     .replaceAll("{{eventJson}}", eventJson);
 }
 
-async function createEventSession(handler, event) {
+async function createEventSession(handler, event, options = {}) {
   const store = await loadStore();
   const settings = store.settings;
   const cwd = await validateCwd(settings.cwd);
@@ -400,10 +543,16 @@ async function createEventSession(handler, event) {
   const singleThread = handler.sessionMode === "single_thread";
   let session = null;
   if (singleThread) {
-    const indexEntry = store.sessions
-      .filter((entry) => entry.handlerId === handler.id && entry.sessionMode === "single_thread")
-      .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0] || null;
-    if (indexEntry) session = await loadSession(indexEntry.id);
+    const handlerSessions = store.sessions
+      .filter((entry) => entry.handlerId === handler.id)
+      .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    for (const entry of handlerSessions) {
+      const loaded = await loadSession(entry.id);
+      if (loaded?.sessionMode === "single_thread") {
+        session = loaded;
+        break;
+      }
+    }
   }
   if (!session) {
     session = {
@@ -446,6 +595,7 @@ async function createEventSession(handler, event) {
 
   const result = await runCli(session, prompt, {
     resumeCliSessionId: singleThread ? session.cliSessionId : null,
+    onStream: options.onStream,
   });
   const finishedAt = nowIso();
   if (result.parsed.cliSessionId) session.cliSessionId = result.parsed.cliSessionId;
@@ -483,11 +633,11 @@ async function createEventSession(handler, event) {
   return { session, result };
 }
 
-function enqueueEventSession(handler, event) {
+function enqueueEventSession(handler, event, options = {}) {
   const current = handlerRunQueues.get(handler.id) || Promise.resolve();
   const next = current
     .catch(() => {})
-    .then(() => createEventSession(handler, event));
+    .then(() => createEventSession(handler, event, options));
   const queued = next.finally(() => {
     if (handlerRunQueues.get(handler.id) === queued) handlerRunQueues.delete(handler.id);
   });
@@ -522,6 +672,138 @@ async function callTelegramApi(config, method, payload, options = {}) {
     throw new Error(parsed.description || `Telegram ${method} failed with HTTP ${response.status}`);
   }
   return parsed.result;
+}
+
+function formatTelegramProgressText({ text, phase, toolLabel }) {
+  if (phase === "tools") {
+    const label = String(toolLabel || "").trim();
+    return label ? `Running ${label}…` : "Running tools…";
+  }
+  if (phase === "thinking") return "Thinking…";
+  if (text?.trim()) return clampText(text, TELEGRAM_MAX_MESSAGE_LENGTH);
+  return "Thinking…";
+}
+
+class TelegramProgress {
+  constructor(config, { draftId } = {}) {
+    this.config = config;
+    this.draftId = Number.isInteger(draftId) && draftId > 0 ? draftId : Math.floor(Math.random() * 2_147_483_647) + 1;
+    this.transport = null;
+    this.messageId = null;
+    this.lastSentText = null;
+    this.lastUpdateAt = 0;
+    this.pending = null;
+    this.closed = false;
+    this.latestStream = { text: "", phase: "thinking", toolLabel: null };
+    this.throttleTimer = null;
+  }
+
+  async start() {
+    try {
+      await callTelegramApi(this.config, "sendMessageDraft", {
+        chat_id: this.config.chatId,
+        draft_id: this.draftId,
+        text: "Thinking…",
+      });
+      this.transport = "draft";
+      this.lastSentText = "Thinking…";
+      this.lastUpdateAt = Date.now();
+      return;
+    } catch {
+      // Groups and older API servers fall back to a placeholder message + edits.
+    }
+
+    const message = await callTelegramApi(this.config, "sendMessage", {
+      chat_id: this.config.chatId,
+      text: "Thinking…",
+    });
+    this.transport = "edit";
+    this.messageId = message?.message_id || null;
+    this.lastSentText = "Thinking…";
+    this.lastUpdateAt = Date.now();
+  }
+
+  update(stream) {
+    if (this.closed || !this.transport) return;
+    this.latestStream = stream;
+    this.scheduleUpdate();
+  }
+
+  scheduleUpdate() {
+    if (this.closed || !this.transport) return;
+    if (this.throttleTimer) return;
+
+    const display = formatTelegramProgressText(this.latestStream);
+    const now = Date.now();
+    const keepaliveDue = this.transport === "draft" && now - this.lastUpdateAt >= TELEGRAM_DRAFT_KEEPALIVE_MS;
+    const throttleDue = now - this.lastUpdateAt >= TELEGRAM_STREAM_THROTTLE_MS;
+
+    if (!keepaliveDue && display === this.lastSentText) return;
+    if (!keepaliveDue && !throttleDue) {
+      this.throttleTimer = setTimeout(() => {
+        this.throttleTimer = null;
+        this.scheduleUpdate();
+      }, TELEGRAM_STREAM_THROTTLE_MS - (now - this.lastUpdateAt));
+      return;
+    }
+
+    if (this.pending) return;
+
+    this.pending = this.flushUpdate(display)
+      .finally(() => {
+        this.pending = null;
+        this.scheduleUpdate();
+      });
+  }
+
+  async flushUpdate(display) {
+    try {
+      if (this.transport === "draft") {
+        await callTelegramApi(this.config, "sendMessageDraft", {
+          chat_id: this.config.chatId,
+          draft_id: this.draftId,
+          text: display,
+        });
+      } else if (this.messageId) {
+        await callTelegramApi(this.config, "editMessageText", {
+          chat_id: this.config.chatId,
+          message_id: this.messageId,
+          text: display,
+        });
+      }
+      this.lastSentText = display;
+      this.lastUpdateAt = Date.now();
+    } catch (error) {
+      console.warn(`Telegram progress update failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async finish(text) {
+    this.closed = true;
+    if (this.throttleTimer) {
+      clearTimeout(this.throttleTimer);
+      this.throttleTimer = null;
+    }
+    if (this.pending) await this.pending.catch(() => {});
+
+    const finalText = clampText(text, TELEGRAM_MAX_MESSAGE_LENGTH);
+    if (!finalText) return null;
+
+    if (this.transport === "edit" && this.messageId) {
+      try {
+        await callTelegramApi(this.config, "editMessageText", {
+          chat_id: this.config.chatId,
+          message_id: this.messageId,
+          text: finalText,
+        });
+        return { message_id: this.messageId };
+      } catch {
+        // Fall through to a fresh message if the placeholder was deleted.
+      }
+    }
+
+    return sendTelegramMessage(this.config, finalText);
+  }
 }
 
 function normalizeChatId(value) {
@@ -611,8 +893,12 @@ class TelegramRunner {
           }
           const event = formatTelegramInbound(update, this.config.chatId);
           if (!event) continue;
-          const { session } = await enqueueEventSession(this.handler, event);
-          await sendTelegramMessage(this.config, session.messages.at(-1)?.content || "");
+          const progress = new TelegramProgress(this.config, { draftId: event.telegram.messageId });
+          await progress.start();
+          const { session } = await enqueueEventSession(this.handler, event, {
+            onStream: (stream) => progress.update(stream),
+          });
+          await progress.finish(session.messages.at(-1)?.content || "");
         }
 
         if (highestUpdateId !== null) {
