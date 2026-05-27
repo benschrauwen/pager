@@ -32,6 +32,9 @@ export function buildArgs(session, options = {}) {
   args.push("--json");
   if (session.model) args.push("--model", session.model);
   if (session.bypassPermissions) args.push("--dangerously-bypass-approvals-and-sandbox");
+  for (const attachment of options.attachments || []) {
+    if (attachment.kind === "image" && attachment.localPath) args.push("--image", attachment.localPath);
+  }
   if (options.resumeCliSessionId) args.push(options.resumeCliSessionId);
   args.push("-");
   return args;

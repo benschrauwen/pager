@@ -1,6 +1,6 @@
 import { enqueueEventSession } from "../sessions.js";
 import { updateStore } from "../store.js";
-import { callTelegramApi } from "./telegram/api.js";
+import { callTelegramApi, downloadTelegramAttachment } from "./telegram/api.js";
 import { resolveTelegramConfig } from "./telegram/config.js";
 import { formatTelegramInbound } from "./telegram/parser.js";
 import { TelegramProgress } from "./telegram/progress.js";
@@ -77,6 +77,21 @@ async function handleTelegramEvent(handler, config, event) {
   await progress.finish(session.messages.at(-1)?.content || "");
 }
 
+async function downloadEventAttachments(config, event) {
+  if (!event.attachments?.length) return event;
+  const attachments = await Promise.all(event.attachments.map(async (attachment) => {
+    try {
+      return await downloadTelegramAttachment(config, attachment);
+    } catch (error) {
+      return {
+        ...attachment,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }));
+  return { ...event, attachments };
+}
+
 export function createRunner(handler) {
   const config = resolveTelegramConfig(handler);
   if (!config) throw new Error("Telegram handler needs a bot token and chat id.");
@@ -115,7 +130,7 @@ export function createRunner(handler) {
 
         for (const update of updates) {
           const event = formatTelegramInbound(update, config.chatId);
-          if (event) await handleTelegramEvent(handler, config, event);
+          if (event) await handleTelegramEvent(handler, config, await downloadEventAttachments(config, event));
         }
 
         const newOffset = highestUpdateOffset(updates, nextUpdateOffset);

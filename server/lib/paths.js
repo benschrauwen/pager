@@ -8,6 +8,7 @@ export const publicDir = path.join(serverDir, "public");
 export const dataDir = path.join(serverDir, ".pager-data");
 export const storePath = path.join(dataDir, "store.json");
 export const sessionsDir = path.join(dataDir, "sessions");
+export const mediaDir = path.join(dataDir, "media");
 
 export function sessionFilePath(sessionId) {
   return path.join(sessionsDir, `${sessionId}.json`);

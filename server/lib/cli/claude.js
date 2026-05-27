@@ -1,3 +1,5 @@
+import path from "node:path";
+
 export const command = process.env.CLAUDE_COMMAND || "claude";
 export const label = "Claude";
 
@@ -6,6 +8,10 @@ export function buildArgs(session, options = {}) {
   if (options.resumeCliSessionId) args.push("--resume", options.resumeCliSessionId);
   if (session.bypassPermissions) args.push("--dangerously-skip-permissions");
   if (session.model) args.push("--model", session.model);
+  const attachmentDirs = new Set(
+    (options.attachments || []).filter((attachment) => attachment.localPath).map((attachment) => path.dirname(attachment.localPath)),
+  );
+  for (const directory of attachmentDirs) args.push("--add-dir", directory);
   return args;
 }
 

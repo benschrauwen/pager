@@ -10,12 +10,19 @@ const handlerRunQueues = new Map();
 export function renderPrompt(template, event, handler) {
   const label = sourceLabel(handler.source);
   const eventJson = JSON.stringify(event, null, 2);
-  return String(template || defaultHandlerPrompt)
+  const rendered = String(template || defaultHandlerPrompt)
     .replaceAll("{{source}}", handler.source)
     .replaceAll("{{sourceLabel}}", label)
     .replaceAll("{{handlerName}}", handler.name)
     .replaceAll("{{eventText}}", event.text || eventJson)
     .replaceAll("{{eventJson}}", eventJson);
+  const attachmentLines = (event.attachments || []).map((attachment) => {
+    if (attachment.localPath) return `- ${attachment.kind}: ${attachment.localPath}`;
+    return `- ${attachment.kind}: unavailable (${attachment.error || "download failed"})`;
+  });
+  return attachmentLines.length
+    ? `${rendered}\n\nLocal attachments available to inspect:\n${attachmentLines.join("\n")}`
+    : rendered;
 }
 
 async function findExistingSingleThreadSession(handler, store) {
@@ -92,6 +99,7 @@ export async function createEventSession(handler, event, options = {}) {
 
   const result = await runCli(session, prompt, {
     resumeCliSessionId: stored.sessionMode === "single_thread" ? session.cliSessionId : null,
+    attachments: event.attachments || [],
     onStream: options.onStream,
   });
 
